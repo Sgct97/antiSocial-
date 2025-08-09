@@ -1,28 +1,27 @@
-import React, { useRef, useState } from 'react';
-import { View, ViewToken, FlatList, StyleSheet, Dimensions } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import Setup from './src/screens/Setup';
-import { useIdeasStore } from './state/ideasStore';
-import IdeaCard from './components/IdeaCard';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, FlatList, Pressable, Dimensions, ViewToken } from 'react-native';
+import { router } from 'expo-router';
+import { useIdeasStore } from '../../state/ideasStore';
+import { ingestAll } from '../../lib/ingest';
+import IdeaCard from '../../components/IdeaCard';
 
 const screenHeight = Math.round(Dimensions.get('window').height);
 
-export default function App() {
-  const [entered, setEntered] = useState(false);
+export default function FeedScreen() {
   const ideas = useIdeasStore((s) => s.ideas);
+  const load = useIdeasStore((s) => s.loadFromIngest);
   const [activeId, setActiveId] = useState<string | null>(null);
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 90 });
-
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<ViewToken> }) => {
     if (viewableItems[0]?.item?.id) setActiveId(viewableItems[0].item.id as string);
   });
 
-  if (!entered) {
-    return <Setup onEnter={() => setEntered(true)} />;
-  }
+  useEffect(() => {
+    ingestAll().then(load).catch(() => {});
+  }, [load]);
 
   return (
-    <SafeAreaView style={styles.root}>
+    <View className="flex-1 bg-obsidian">
       <FlatList
         data={ideas}
         keyExtractor={(item) => item.id}
@@ -34,7 +33,7 @@ export default function App() {
         showsVerticalScrollIndicator={false}
         getItemLayout={(_, index) => ({ length: screenHeight, offset: screenHeight * index, index })}
         renderItem={({ item }) => (
-          <View style={{ height: screenHeight }}>
+          <Pressable onPress={() => router.push(`/chat/${item.id}`)} style={{ height: screenHeight }}>
             <View style={{ flex: 1, paddingHorizontal: 16, paddingVertical: 12 }}>
               <IdeaCard
                 title={item.title}
@@ -42,15 +41,16 @@ export default function App() {
                 isActive={activeId === item.id}
               />
             </View>
-          </View>
+          </Pressable>
         )}
         onViewableItemsChanged={onViewableItemsChanged.current}
         viewabilityConfig={viewabilityConfig.current}
+        ListEmptyComponent={
+          <View style={{ marginTop: 40 }}>
+            <Text className="text-neutral-400 text-center">Loading ideas…</Text>
+          </View>
+        }
       />
-    </SafeAreaView>
+    </View>
   );
 }
-
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0B0D10' },
-});

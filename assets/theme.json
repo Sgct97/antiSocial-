@@ -1,0 +1,13 @@
+{
+  "spacing": { "xs": 4, "sm": 8, "md": 12, "lg": 20, "xl": 32 },
+  "radii": { "card": 18, "button": 12 },
+  "fonts": { "family": "Inter", "tightFamily": "Inter Tight", "weights": [400, 500, 600, 700] },
+  "colors": {
+    "obsidian": "#0B0D10",
+    "ink": "#14161B",
+    "electric": "#00E8D1",
+    "gold": "#FFD66B",
+    "electric20": "rgba(0,232,209,0.2)"
+  },
+  "shadows": { "cardShadow": "rgba(0,0,0,0.45) 0 4 16 -4" }
+}

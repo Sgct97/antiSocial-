@@ -1,0 +1,32 @@
+[
+  {
+    "id": "p1",
+    "title": "Local marketplace scraper",
+    "blurb": "GUI for item+city filters; runs periodically and emails matches. Solve ‘new’ items that are actually old.",
+    "tags": ["automation", "scraping", "email", "dedup"]
+  },
+  {
+    "id": "p2",
+    "title": "AntiSocial MVP",
+    "blurb": "Text‑first, TikTok‑style feed of your own ideas → tap to chat; progressive summary + one elite question.",
+    "tags": ["react-native", "design", "on-device", "llm"]
+  },
+  {
+    "id": "p3",
+    "title": "Ideas on religion",
+    "blurb": "Clarify beliefs, key questions, and reading map drawn from your ChatGPT history.",
+    "tags": ["philosophy", "religion", "notes"]
+  },
+  {
+    "id": "p4",
+    "title": "Open RAG Data Library",
+    "blurb": "Curate real, open datasets devs can use to test RAG systems—clean docs, licenses, and examples.",
+    "tags": ["rag", "datasets", "open-source"]
+  },
+  {
+    "id": "p5",
+    "title": "EarlyBird AI clients (Tampa Bay)",
+    "blurb": "Website + Google + Facebook live. Pilot in‑person AI Q&A at coffee shops to build trust and pipeline.",
+    "tags": ["services", "growth", "events", "marketing"]
+  }
+]
