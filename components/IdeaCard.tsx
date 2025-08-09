@@ -60,7 +60,7 @@ export default function IdeaCard({ title, blurb, hook = 'Let’s make a move →
             <Text key={i} style={styles.promptItem}>• {p}</Text>
           ))}
           {!isLoading && !hasPrompts && (
-            <Text style={styles.promptItem}>• LLM not connected. Open Ollama on 127.0.0.1:11434</Text>
+            <Text style={styles.promptItem}>• Waiting for prompt generation…</Text>
           )}
         </View>
       </View>

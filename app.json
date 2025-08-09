@@ -25,6 +25,10 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "extra": {
+      "llmUrl": "http://127.0.0.1:11434/v1/chat/completions",
+      "llmModel": "llama3.1:8b-instruct-q4_K_M"
+    },
     "plugins": [
       "expo-sqlite",
       "expo-asset",

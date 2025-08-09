@@ -1,10 +1,12 @@
+import Constants from 'expo-constants';
 import { retrieveTopK } from './ideas';
 import { getDocsByIds, getCachedPrompts, setCachedPrompts } from './db';
 
-// Default to Ollama OpenAI-compatible server on LAN IP for simulator reliability
-const LLM_URL = process.env.LLM_URL || 'http://192.168.1.12:11434/v1/chat/completions';
-const LLM_TOKEN = process.env.LLM_TOKEN || '';
-const MODEL = process.env.LLM_MODEL || 'llama3.1:8b-instruct-q4_K_M';
+// Prefer runtime config via expo-constants.extra, then env, then 127.0.0.1 default
+const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, unknown>;
+const LLM_URL = (extra.llmUrl as string) || process.env.LLM_URL || 'http://127.0.0.1:11434/v1/chat/completions';
+const LLM_TOKEN = (extra.llmToken as string) || process.env.LLM_TOKEN || '';
+const MODEL = (extra.llmModel as string) || process.env.LLM_MODEL || 'llama3.1:8b-instruct-q4_K_M';
 
 async function postJSON(url: string, body: Record<string, unknown>) {
   const res = await fetch(url, {
@@ -28,16 +30,7 @@ function parseBullets(text: string): string[] {
   return cleaned;
 }
 
-function sentenceFallback(text: string): string[] {
-  const parts = text
-    .replace(/\n+/g, ' ')
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 3)
-    .map((s) => (s.length > 140 ? s.slice(0, 137) + '…' : s));
-  return parts;
-}
+// No fallback: if formatting fails or LLM is unavailable, we return an empty array
 
 export async function generatePromptsForIdea(ideaId: string, title: string, blurb: string): Promise<string[]> {
   const cached = getCachedPrompts(ideaId);
@@ -67,32 +60,32 @@ export async function generatePromptsForIdea(ideaId: string, title: string, blur
       max_tokens: 200,
     });
 
-  let json = await request();
-  let text: string = (json as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content || '';
-  let bullets = parseBullets(text);
+  try {
+    let json = await request();
+    let text: string = (json as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content || '';
+    let bullets = parseBullets(text);
 
-  if (bullets.length < 3) {
-    const retryUser = `${user}\n\nYour previous response did not match the format. Respond again with exactly three lines starting with '- ' and nothing else.`;
-    json = await postJSON(LLM_URL, {
-      model: MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: retryUser },
-      ],
-      temperature: 0.5,
-      max_tokens: 200,
-    });
-    text = (json as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content || '';
-    bullets = parseBullets(text);
-  }
+    if (bullets.length < 3) {
+      const retryUser = `${user}\n\nYour previous response did not match the format. Respond again with exactly three lines starting with '- ' and nothing else.`;
+      json = await postJSON(LLM_URL, {
+        model: MODEL,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: retryUser },
+        ],
+        temperature: 0.5,
+        max_tokens: 200,
+      });
+      text = (json as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content || '';
+      bullets = parseBullets(text);
+    }
 
-  if (bullets.length < 3) {
-    bullets = sentenceFallback(text);
-  }
-
-  if (bullets.length >= 3) {
-    setCachedPrompts(ideaId, bullets);
-    return bullets;
+    if (bullets.length >= 3) {
+      setCachedPrompts(ideaId, bullets);
+      return bullets;
+    }
+  } catch (_e) {
+    // No fallback; return empty list on error
   }
 
   return [];
