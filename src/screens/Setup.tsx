@@ -10,18 +10,16 @@ export default function Setup({ onEnter }: { onEnter: () => void }) {
   const load = useIdeasStore((s) => s.loadFromIngest);
 
   async function enter() {
-    // Wipe any cached prompts so no legacy fallbacks remain
+    // Wipe any cached prompts
     try { clearAllPrompts(); } catch {}
 
     const data = await ingestAll();
-    // Load immediately (fast path)
+    // Build ideas and populate SQLite (docs + vectors) BEFORE entering feed so RAG works on first render
+    try {
+      await buildIdeas(data.projects, data.messages);
+    } catch {}
+    // Load store after build so titles/blurbs are ready while vectors/docs exist
     load({ projects: data.projects, messages: data.messages });
-    // Run heavy build in background without blocking UI
-    InteractionManager.runAfterInteractions(() => {
-      setTimeout(() => {
-        buildIdeas(data.projects, data.messages).catch(() => {});
-      }, 0);
-    });
     onEnter();
   }
 

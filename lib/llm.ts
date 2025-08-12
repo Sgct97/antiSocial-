@@ -1,21 +1,84 @@
 import Constants from 'expo-constants';
+// Static fallback to read build-time config if runtime extra is unavailable
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore app.json has no types
+import appJson from '../app.json';
 import { retrieveTopK } from './ideas';
-import { getDocsByIds, getCachedPrompts, setCachedPrompts } from './db';
+import { getDocsByIds, getCachedPrompts, setCachedPrompts, initDb } from './db';
+import { logDebug } from './log';
 
-// Prefer runtime config via expo-constants.extra, then env, then 127.0.0.1 default
-const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, unknown>;
-const LLM_URL = (extra.llmUrl as string) || process.env.LLM_URL || 'http://127.0.0.1:11434/v1/chat/completions';
-const LLM_TOKEN = (extra.llmToken as string) || process.env.LLM_TOKEN || '';
-const MODEL = (extra.llmModel as string) || process.env.LLM_MODEL || 'llama3.1:8b-instruct-q4_K_M';
+// Prefer EXPO_PUBLIC_* env first (for .env in Expo Go), then expo-constants.extra, then generic env, then HTTPS default
+const extra = ((Constants.expoConfig?.extra ?? appJson?.expo?.extra) ?? {}) as Record<string, unknown>;
+const LLM_URL =
+  (process.env.EXPO_PUBLIC_LLM_URL as string) ||
+  (extra.llmUrl as string) ||
+  (process.env.LLM_URL as string) ||
+  'https://api.openai.com/v1/chat/completions';
+const LLM_TOKEN =
+  (process.env.EXPO_PUBLIC_LLM_TOKEN as string) ||
+  (extra.llmToken as string) ||
+  (process.env.LLM_TOKEN as string) ||
+  '';
+let MODEL =
+  (process.env.EXPO_PUBLIC_LLM_MODEL as string) ||
+  (extra.llmModel as string) ||
+  (process.env.LLM_MODEL as string) ||
+  'gpt-4o-mini';
 
-async function postJSON(url: string, body: Record<string, unknown>) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(LLM_TOKEN ? { Authorization: `Bearer ${LLM_TOKEN}` } : {}) },
-    body: JSON.stringify(body),
+// Map OpenAI "o4-mini" to chat/completions-compatible model name if needed
+if (MODEL === 'o4-mini') {
+  console.log('[LLM] mapping model o4-mini -> gpt-4o-mini for chat/completions endpoint');
+  MODEL = 'gpt-4o-mini';
+}
+
+// Emit config snapshot at module load for visibility
+try {
+  const tokenPresent = !!(
+    (process.env.EXPO_PUBLIC_LLM_TOKEN as string) ||
+    (extra.llmToken as string) ||
+    (process.env.LLM_TOKEN as string)
+  );
+  console.log(`[LLM] config url=${LLM_URL} model=${MODEL} token=${tokenPresent ? 'present' : 'missing'}`);
+} catch {}
+
+async function postJSON(url: string, body: Record<string, unknown>): Promise<unknown> {
+  try {
+    console.log(`[LLM] POST ${url} model=${MODEL}`);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(LLM_TOKEN ? { Authorization: `Bearer ${LLM_TOKEN}` } : {}) },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      console.warn(`[LLM] HTTP ${res.status} body=${text.slice(0, 200)}`);
+      throw new Error(`LLM_HTTP_${res.status}`);
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch (e) {
+      console.warn('[LLM] JSON parse error body head=', text.slice(0, 200));
+      throw e;
+    }
+  } catch (e) {
+    console.warn('[LLM] postJSON error:', (e as Error)?.message ?? String(e));
+    throw e;
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error('LLM_TIMEOUT')), ms);
+    promise
+      .then((v) => {
+        clearTimeout(id);
+        resolve(v);
+      })
+      .catch((e) => {
+        clearTimeout(id);
+        reject(e);
+      });
   });
-  if (!res.ok) throw new Error(`LLM ${res.status}`);
-  return res.json();
 }
 
 function parseBullets(text: string): string[] {
@@ -30,21 +93,54 @@ function parseBullets(text: string): string[] {
   return cleaned;
 }
 
-// No fallback: if formatting fails or LLM is unavailable, we return an empty array
+function sentenceFallback(text: string): string[] {
+  return text
+    .replace(/\n+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((s) => (s.length > 140 ? s.slice(0, 137) + '…' : s));
+}
 
-export async function generatePromptsForIdea(ideaId: string, title: string, blurb: string): Promise<string[]> {
+export async function generatePromptsForIdea(
+  ideaId: string,
+  title: string,
+  blurb: string,
+  onLog?: (msg: string) => void,
+): Promise<string[]> {
+  // Ensure tables exist (docs, vectors, prompts)
+  try { initDb(); } catch {}
+  // Log active config once per invocation for visibility in Metro logs
+  try {
+    const line = `[LLM] url=${LLM_URL} model=${MODEL}`;
+    console.log(line);
+    logDebug(line);
+    onLog?.(line);
+  } catch {}
   const cached = getCachedPrompts(ideaId);
   if (cached && cached.length >= 3) return cached;
 
   const query = `${title}. ${blurb}`;
-  const getEmbedding = async (text: string) => {
+  let contextDocs = '';
+  try {
     const { embedTextsFallback } = await import('./embeddings');
-    return embedTextsFallback([text])[0];
-  };
-
-  const qVec = await getEmbedding(query);
-  const top = retrieveTopK(qVec, 6);
-  const contextDocs = getDocsByIds(top.map((t) => t.id)).map((d) => d.text).join('\n\n');
+    const qVec = embedTextsFallback([query])[0];
+    const top = retrieveTopK(qVec, 6);
+    contextDocs = getDocsByIds(top.map((t) => t.id)).map((d) => d.text).join('\n\n');
+    {
+      const line = `[LLM] RAG context docs=${top.length} totalLen=${contextDocs.length}`;
+      console.log(line);
+      logDebug(line);
+      onLog?.(line);
+    }
+  } catch (e) {
+    const line = `[LLM] RAG context build failed: ${(e as Error)?.message ?? String(e)}`;
+    console.warn(line);
+    logDebug(line);
+    onLog?.(line);
+    contextDocs = '';
+  }
 
   const system = `You are a concise, warm product coach. Produce EXACTLY THREE bullet points that are highly actionable and specific. RULES: (1) Output only three lines, no intro/outro, (2) each line must start with '- ', (3) <= 20 words if possible, (4) no numbering, no generic fluff.`;
   const user = `Idea: ${title}\n\nBlurb: ${blurb}\n\nNotes (from user's history):\n${contextDocs}\n\nRespond with ONLY three lines as specified.`;
@@ -61,13 +157,43 @@ export async function generatePromptsForIdea(ideaId: string, title: string, blur
     });
 
   try {
-    let json = await request();
-    let text: string = (json as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content || '';
+    let json: unknown = await withTimeout(request(), 20000);
+    // Support providers that return either choices[].message.content or choices[].text
+    function extractText(resp: unknown): string {
+      if (!resp || typeof resp !== 'object') return '';
+      const maybeChoices = (resp as { choices?: unknown }).choices;
+      if (!Array.isArray(maybeChoices) || maybeChoices.length === 0) return '';
+      const first = maybeChoices[0];
+      if (first && typeof first === 'object') {
+        const maybeMessage = (first as { message?: unknown }).message;
+        const maybeText = (first as { text?: unknown }).text;
+        const fromMessage =
+          maybeMessage && typeof maybeMessage === 'object'
+            ? (maybeMessage as { content?: unknown }).content
+            : undefined;
+        if (typeof fromMessage === 'string') return fromMessage;
+        if (typeof maybeText === 'string') return maybeText;
+      }
+      return '';
+    }
+    let text: string = extractText(json);
+    {
+      const line = `[LLM] resp length=${text.length}`;
+      console.log(line);
+      logDebug(line);
+      onLog?.(line);
+    }
     let bullets = parseBullets(text);
+    {
+      const line = `[LLM] bullets first pass count=${bullets.length}`;
+      console.log(line);
+      logDebug(line);
+      onLog?.(line);
+    }
 
     if (bullets.length < 3) {
       const retryUser = `${user}\n\nYour previous response did not match the format. Respond again with exactly three lines starting with '- ' and nothing else.`;
-      json = await postJSON(LLM_URL, {
+      json = await withTimeout(postJSON(LLM_URL, {
         model: MODEL,
         messages: [
           { role: 'system', content: system },
@@ -75,17 +201,30 @@ export async function generatePromptsForIdea(ideaId: string, title: string, blur
         ],
         temperature: 0.5,
         max_tokens: 200,
-      });
-      text = (json as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content || '';
+      }), 10000);
+      text = extractText(json);
       bullets = parseBullets(text);
+      {
+        const line = `[LLM] bullets retry pass count=${bullets.length}`;
+        console.log(line);
+        logDebug(line);
+        onLog?.(line);
+      }
+    }
+
+    if (bullets.length < 3 && text) {
+      bullets = sentenceFallback(text);
     }
 
     if (bullets.length >= 3) {
       setCachedPrompts(ideaId, bullets);
       return bullets;
     }
-  } catch (_e) {
-    // No fallback; return empty list on error
+  } catch (e) {
+    const line = `[LLM] request failed: ${(e as Error)?.message ?? String(e)}`;
+    console.warn(line);
+    logDebug(line);
+    onLog?.(line);
   }
 
   return [];

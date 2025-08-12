@@ -3,33 +3,83 @@ import { View, Text, StyleSheet } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withDelay } from 'react-native-reanimated';
 import CardArt from './CardArt';
 import { generatePromptsForIdea } from '../lib/llm';
+import { getCachedPrompts } from '../lib/db';
+import { logDebug } from '../lib/log';
 
 export type IdeaCardProps = {
+  id: string;
   title: string;
   blurb: string;
   hook?: string;
   isActive: boolean;
+  onFirstActivate?: () => void;
 };
 
-export default function IdeaCard({ title, blurb, hook = 'Let’s make a move →', isActive }: IdeaCardProps) {
+export default function IdeaCard({ id, title, blurb, hook = 'Let’s make a move →', isActive, onFirstActivate }: IdeaCardProps) {
   const [prompts, setPrompts] = useState<string[] | null>(null);
+  const [debug, setDebug] = useState<string[]>([]);
   const scale = useSharedValue(0.95);
   const chipOpacity = useSharedValue(0);
   const ctaTranslate = useSharedValue(20);
   const ctaOpacity = useSharedValue(0);
-  const idRef = useRef(`${title}|${blurb}`.slice(0, 120));
-  useEffect(() => { idRef.current = `${title}|${blurb}`.slice(0, 120); }, [title, blurb]);
+  const idRef = useRef(id);
+  const attemptsRef = useRef(0);
+  const loadingRef = useRef(false);
+  const hasActivatedOnceRef = useRef(false);
+  const onFirstActivateRef = useRef(onFirstActivate);
+  useEffect(() => { onFirstActivateRef.current = onFirstActivate; }, [onFirstActivate]);
+  useEffect(() => { idRef.current = id; }, [id]);
+  useEffect(() => { attemptsRef.current = 0; setPrompts(null); }, [id, title, blurb]);
 
-  // Only fetch when card becomes active and we don't have prompts yet
+  // Load cached prompts immediately if available so bullets appear without waiting for activation
   useEffect(() => {
+    try {
+      const cached = getCachedPrompts(idRef.current);
+      if (cached && cached.length >= 3) {
+        setPrompts(cached);
+        const line = `[IdeaCard] cache hit id=${idRef.current} count=${cached.length}`;
+        try { logDebug(line); } catch {}
+        setDebug((d) => [...d.slice(-6), line]);
+      }
+    } catch {}
+  }, [id]);
+
+  // Fetch when active card becomes visible
+  useEffect(() => {
+    if (isActive && !hasActivatedOnceRef.current) {
+      hasActivatedOnceRef.current = true;
+      try { onFirstActivateRef.current?.(); } catch {}
+    }
     if (!isActive) return;
-    if (prompts !== null) return;
+    if (loadingRef.current) return;
     let cancelled = false;
-    generatePromptsForIdea(idRef.current, title, blurb)
-      .then((res) => { if (!cancelled) setPrompts(res); })
-      .catch(() => { if (!cancelled) setPrompts([]); });
+    loadingRef.current = true;
+    (async () => {
+      let result: string[] = [];
+      attemptsRef.current = 0;
+      // Emit immediate log line to HUD so we know we entered generation
+      try { logDebug(`[IdeaCard] start id=${idRef.current}`); } catch {}
+      while (!cancelled && attemptsRef.current < 3) {
+        const line = `[IdeaCard] gen attempt ${attemptsRef.current + 1} id=${idRef.current}`;
+        console.log(line);
+        logDebug(line);
+        setDebug((d) => [...d.slice(-6), line]);
+        try {
+           const res = await generatePromptsForIdea(idRef.current, title, blurb, (msg) => setDebug((d) => [...d.slice(-6), msg]));
+          if (Array.isArray(res) && res.length > 0) { result = res; break; }
+        } catch {}
+        attemptsRef.current += 1;
+        if (attemptsRef.current < 3) await new Promise((r) => setTimeout(r, 1000));
+      }
+      const finalLine = `[IdeaCard] attempts=${attemptsRef.current} resultCount=${result.length}`;
+      console.log(finalLine);
+      logDebug(finalLine);
+      setDebug((d) => [...d.slice(-6), finalLine]);
+      if (!cancelled) setPrompts(result);
+      loadingRef.current = false;
+    })();
     return () => { cancelled = true; };
-  }, [isActive, title, blurb, prompts]);
+  }, [isActive, title, blurb]);
 
   useEffect(() => {
     scale.value = withTiming(isActive ? 1 : 0.95, { duration: 200 });
@@ -70,6 +120,15 @@ export default function IdeaCard({ title, blurb, hook = 'Let’s make a move →
       <Animated.View style={[styles.ctaRow, ctaStyle]}>
         <Text style={styles.ctaText}>Tap to open chat</Text>
       </Animated.View>
+      <View style={styles.debugBox}>
+        {debug.length === 0 ? (
+          <Text style={styles.debugText}>[IdeaCard] awaiting logs… isActive={String(isActive)}</Text>
+        ) : (
+          debug.map((l, i) => (
+            <Text key={i} style={styles.debugText}>{l}</Text>
+          ))
+        )}
+      </View>
     </Animated.View>
   );
 }
@@ -98,4 +157,6 @@ const styles = StyleSheet.create({
   chipText: { color: '#00E8D1', fontSize: 12, fontWeight: '600' },
   ctaRow: { marginTop: 12 },
   ctaText: { color: '#B0B6BF', fontSize: 13 },
+  debugBox: { marginTop: 8, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 8, padding: 8 },
+  debugText: { color: '#9CA3AF', fontSize: 10, lineHeight: 14 },
 });

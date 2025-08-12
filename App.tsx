@@ -37,6 +37,7 @@ export default function App() {
           <View style={{ height: screenHeight }}>
             <View style={{ flex: 1, paddingHorizontal: 16, paddingVertical: 12 }}>
               <IdeaCard
+                id={item.id}
                 title={item.title}
                 blurb={item.blurb}
                 isActive={activeId === item.id}

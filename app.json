@@ -13,7 +13,14 @@
       "backgroundColor": "#0B0D10"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "deploymentTarget": "17.0",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      },
+      "bundleIdentifier": "com.anonymous.antiSocial"
     },
     "android": {
       "adaptiveIcon": {
@@ -26,15 +33,14 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "llmUrl": "http://127.0.0.1:11434/v1/chat/completions",
-      "llmModel": "llama3.1:8b-instruct-q4_K_M"
+      "llmUrl": "http://localhost:11434/v1/chat/completions",
+      "llmModel": "llama3.1:8b-instruct-q4_K_M",
+      "llmToken": ""
     },
     "plugins": [
       "expo-sqlite",
       "expo-asset",
-      ["expo-router", {
-        "origin": "auto"
-      }]
+      "expo-router"
     ]
   }
 }
