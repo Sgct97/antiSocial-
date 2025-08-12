@@ -43,6 +43,11 @@ if (MODEL === 'o4-mini') {
   MODEL = 'gpt-4o-mini';
 }
 
+// Prefer explicit modern model if requested via env/app.json
+if (MODEL === 'gpt-4.1-mini') {
+  console.log('[LLM] using model gpt-4.1-mini');
+}
+
 // Emit config snapshot at module load for visibility
 try {
   const tokenPresent = !!(
@@ -265,24 +270,23 @@ export async function continueThread(
   const recent = getMessages(threadId, 30);
   try { onLog?.(`[ChatLLM] fetched messages count=${recent.length}`); } catch {}
 
-  // Build RAG context: restrict to this project's doc plus user's chat history
+  // Build RAG context: restrict to this idea's project doc + this thread + user's chat history
   let contextDocs = '';
   try {
     const { embedTextsFallback } = await import('./embeddings');
     const qVec = embedTextsFallback([`${idea.title}. ${idea.blurb}. ${userInput}`])[0];
-    // Candidate pool: project doc for this idea + all chat docs
-    const projectIds = getDocIdsByPrefix('proj_');
-    // Pick the matching project doc by fuzzy title/blurb match from docs table
-    // For simplicity, select any proj_* whose id contains a stable project id when available in idea.id
-    // If no match, we will still let retrieval fall back to chat docs only.
+    // Determine root project id from threadId (e.g., p2_s3 -> p2 → proj_p2)
+    const rootId = threadId.split('_')[0] ?? threadId;
+    const projectIds = rootId.startsWith('p') ? getDocIdsByPrefix(`proj_${rootId}`) : [];
     const chatIds = getDocIdsBySource('chat');
-    const candidateIds = new Set<string>([...projectIds, ...chatIds]);
+    const threadIds = getDocIdsByPrefix(`thread_${threadId}_`);
+    const candidateIds = new Set<string>([...projectIds, ...chatIds, ...threadIds]);
     const allTop = retrieveTopK(qVec, 12);
     const filteredTop = allTop.filter((t) => candidateIds.has(t.id)).slice(0, 6);
     const globals = getDocsByIds(filteredTop.map((t) => t.id)).map((d) => d.text);
     const recentText = recent.slice(-10).map((m) => `[${m.role}] ${m.content}`);
     contextDocs = [...globals, ...recentText].join('\n\n');
-    const line = `[ChatLLM] RAG context globals=${globals.length} recent=${recentText.length} totalLen=${contextDocs.length}`;
+    const line = `[ChatLLM] RAG context globals=${globals.length} recent=${recentText.length} pools: proj=${projectIds.length} chat=${chatIds.length} thread=${threadIds.length} totalLen=${contextDocs.length}`;
     console.log(line);
     logDebug(line);
     onLog?.(line);
