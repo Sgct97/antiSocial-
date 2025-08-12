@@ -8,3 +8,6 @@ metro-cache/
 .idea/
 android/.gradle/
 *.log
+
+chat.html
+assets/chat.html
