@@ -10,6 +10,8 @@ type ChatMessage = { id: string; role: 'user' | 'assistant' | 'system'; content:
 export default function ChatScreen() {
   const { id, title: paramTitle, blurb: paramBlurb } = useLocalSearchParams<{ id: string; title?: string; blurb?: string }>();
   const threadId = String(id || '');
+  // Treat thread as project-level: normalize threadId to its root (e.g., p2_s3 -> p2)
+  const rootThreadId = useMemo(() => threadId.split('_')[0] || threadId, [threadId]);
   const [title, setTitle] = useState<string>('');
   const blurbRef = useRef<string>(typeof paramBlurb === 'string' ? paramBlurb : '');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -19,28 +21,28 @@ export default function ChatScreen() {
   const containerHeight = useMeasuredContainerHeight();
 
   useEffect(() => {
-    if (!threadId) return;
+    if (!rootThreadId) return;
     try { ensureChatTables(); } catch {}
     // Title: use the first part of id as fallback; real title is set by caller via upsertThread
     try {
-      const t = upsertThread({ id: threadId, title: (typeof paramTitle === 'string' && paramTitle) ? paramTitle : `Idea ${threadId}` });
+      const t = upsertThread({ id: rootThreadId, title: (typeof paramTitle === 'string' && paramTitle) ? paramTitle : `Idea ${rootThreadId}` });
       setTitle(t.title);
       logDebug(`[Chat] thread ready id=${t.id} title=${t.title}`);
     } catch {}
     loadMessages();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, paramTitle]);
+  }, [rootThreadId, paramTitle]);
 
   const loadMessages = useCallback(() => {
     try {
-      const rows = getMessages(threadId);
+      const rows = getMessages(rootThreadId);
       setMessages(rows as ChatMessage[]);
       logDebug(`[Chat] messages fetched count=${rows.length}`);
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
     } catch (e) {
       logDebug(`[Chat] messages fetch error: ${(e as Error)?.message ?? String(e)}`);
     }
-  }, [threadId]);
+  }, [rootThreadId]);
 
   const send = useCallback(async () => {
     if (!input.trim() || sending) return;
@@ -55,7 +57,7 @@ export default function ChatScreen() {
         return [...prev, temp];
       });
       listRef.current?.scrollToEnd({ animated: true });
-      const reply = await continueThread(threadId, text, { title: title || `Idea ${threadId}`, blurb: blurbRef.current || '' }, (m) => logDebug(m));
+      const reply = await continueThread(rootThreadId, text, { title: title || `Idea ${rootThreadId}`, blurb: blurbRef.current || '' }, (m) => logDebug(m));
       // Reload to reflect persisted messages (user + assistant)
       loadMessages();
       logDebug(`[Chat] assistant reply len=${reply.length}`);

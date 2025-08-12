@@ -116,7 +116,10 @@ export default function IdeaCard({ id, title, blurb, hook = 'Let’s make a move
         </View>
       </View>
       <Animated.View style={[styles.chip, chipStyle]}>
-        <Pressable onPress={() => router.push(`/chat/${id}`)}>
+        <Pressable onPress={() => {
+          const rootId = id.split('_')[0];
+          router.push(`/chat/${rootId}`);
+        }}>
           <Text style={styles.chipText}>{hook}</Text>
         </Pressable>
       </Animated.View>

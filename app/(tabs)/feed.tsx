@@ -118,8 +118,9 @@ export default function FeedScreen() {
             console.log(line);
             try { logDebug(line); } catch {}
           }
+          const rootId = item.id.split('_')[0];
           return (
-            <Pressable onPress={() => router.push({ pathname: `/chat/${item.id}`, params: { title: item.title, blurb: item.blurb } })} style={{ height: containerHeight }}>
+            <Pressable onPress={() => router.push({ pathname: `/chat/${rootId}`, params: { title: item.title, blurb: item.blurb } })} style={{ height: containerHeight }}>
               <View style={{ flex: 1, paddingHorizontal: 16, paddingVertical: 12 }}>
                 <IdeaCard
                   id={item.id}
