@@ -63,6 +63,18 @@ export function getDocsByIds(ids: string[]): { id: string; text: string; source:
   return res.map((r) => ({ id: r.id, text: r.text!, source: r.source! }));
 }
 
+export function getDocIdsBySource(source: string): string[] {
+  const d = getDb();
+  const rows = d.getAllSync<Row>('SELECT id FROM docs WHERE source = ?', [source]);
+  return rows.map((r) => r.id);
+}
+
+export function getDocIdsByPrefix(prefix: string): string[] {
+  const d = getDb();
+  const rows = d.getAllSync<Row>('SELECT id FROM docs WHERE id LIKE ?', [`${prefix}%`]);
+  return rows.map((r) => r.id);
+}
+
 export function getCachedPrompts(id: string): string[] | null {
   const d = getDb();
   const row = d.getFirstSync<Row>('SELECT data_text FROM prompts WHERE id = ?', [id]);

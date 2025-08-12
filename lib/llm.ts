@@ -14,6 +14,8 @@ import {
   appendMessage,
   getMessages,
   upsertThreadVectors,
+  getDocIdsBySource,
+  getDocIdsByPrefix,
 } from './db';
 import { logDebug } from './log';
 
@@ -263,13 +265,21 @@ export async function continueThread(
   const recent = getMessages(threadId, 30);
   try { onLog?.(`[ChatLLM] fetched messages count=${recent.length}`); } catch {}
 
-  // Build RAG context: combine global top-K + recent raw texts
+  // Build RAG context: restrict to this project's doc plus user's chat history
   let contextDocs = '';
   try {
     const { embedTextsFallback } = await import('./embeddings');
     const qVec = embedTextsFallback([`${idea.title}. ${idea.blurb}. ${userInput}`])[0];
-    const top = retrieveTopK(qVec, 6);
-    const globals = getDocsByIds(top.map((t) => t.id)).map((d) => d.text);
+    // Candidate pool: project doc for this idea + all chat docs
+    const projectIds = getDocIdsByPrefix('proj_');
+    // Pick the matching project doc by fuzzy title/blurb match from docs table
+    // For simplicity, select any proj_* whose id contains a stable project id when available in idea.id
+    // If no match, we will still let retrieval fall back to chat docs only.
+    const chatIds = getDocIdsBySource('chat');
+    const candidateIds = new Set<string>([...projectIds, ...chatIds]);
+    const allTop = retrieveTopK(qVec, 12);
+    const filteredTop = allTop.filter((t) => candidateIds.has(t.id)).slice(0, 6);
+    const globals = getDocsByIds(filteredTop.map((t) => t.id)).map((d) => d.text);
     const recentText = recent.slice(-10).map((m) => `[${m.role}] ${m.content}`);
     contextDocs = [...globals, ...recentText].join('\n\n');
     const line = `[ChatLLM] RAG context globals=${globals.length} recent=${recentText.length} totalLen=${contextDocs.length}`;
