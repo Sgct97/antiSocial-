@@ -119,7 +119,7 @@ export default function FeedScreen() {
             try { logDebug(line); } catch {}
           }
           return (
-            <Pressable onPress={() => router.push(`/chat/${item.id}`)} style={{ height: containerHeight }}>
+            <Pressable onPress={() => router.push({ pathname: `/chat/${item.id}`, params: { title: item.title, blurb: item.blurb } })} style={{ height: containerHeight }}>
               <View style={{ flex: 1, paddingHorizontal: 16, paddingVertical: 12 }}>
                 <IdeaCard
                   id={item.id}

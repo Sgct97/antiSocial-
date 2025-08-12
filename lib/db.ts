@@ -96,3 +96,108 @@ export function clearPromptsForIds(ids: string[]) {
     stmt.finalizeSync();
   });
 }
+
+// ----------------------
+// Chat threads and messages
+// ----------------------
+
+export type ThreadRow = { id: string; title: string; createdAt: number; updatedAt: number };
+export type ChatMessageRow = {
+  id: string; // e.g., t{threadId}_m{n}
+  threadId: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  createdAt: number;
+};
+
+export function ensureChatTables() {
+  const d = getDb();
+  d.execSync(`
+    CREATE TABLE IF NOT EXISTS threads (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id TEXT PRIMARY KEY,
+      threadId TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      FOREIGN KEY(threadId) REFERENCES threads(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_time ON chat_messages(threadId, createdAt);
+  `);
+}
+
+export function upsertThread(input: { id: string; title: string }): ThreadRow {
+  const d = getDb();
+  const now = Date.now();
+  d.withTransactionSync(() => {
+    // Insert if missing
+    const insertStmt = d.prepareSync('INSERT OR IGNORE INTO threads (id, title, createdAt, updatedAt) VALUES (?, ?, ?, ?)');
+    insertStmt.executeSync([input.id, input.title, now, now]);
+    insertStmt.finalizeSync();
+    // Always update title and updatedAt
+    const updateStmt = d.prepareSync('UPDATE threads SET title = ?, updatedAt = ? WHERE id = ?');
+    updateStmt.executeSync([input.title, now, input.id]);
+    updateStmt.finalizeSync();
+  });
+  const row = d.getFirstSync<Row>('SELECT id, title, createdAt, updatedAt FROM threads WHERE id = ?', [input.id]);
+  return { id: row!.id, title: (row as any).title, createdAt: (row as any).createdAt, updatedAt: (row as any).updatedAt } as ThreadRow;
+}
+
+export function appendMessage(input: { threadId: string; role: 'user' | 'assistant' | 'system'; content: string }): ChatMessageRow {
+  const d = getDb();
+  const now = Date.now();
+  // Determine next message index n for this thread
+  const countRow = d.getFirstSync<{ c: number }>('SELECT COUNT(1) as c FROM chat_messages WHERE threadId = ?', [input.threadId]);
+  const n = Number(countRow?.c ?? 0) + 1;
+  const msgId = `t${input.threadId}_m${n}`;
+  d.withTransactionSync(() => {
+    const insertMsg = d.prepareSync('INSERT OR REPLACE INTO chat_messages (id, threadId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)');
+    insertMsg.executeSync([msgId, input.threadId, input.role, input.content, now]);
+    insertMsg.finalizeSync();
+    const updateThread = d.prepareSync('UPDATE threads SET updatedAt = ? WHERE id = ?');
+    updateThread.executeSync([now, input.threadId]);
+    updateThread.finalizeSync();
+  });
+  return { id: msgId, threadId: input.threadId, role: input.role, content: input.content, createdAt: now };
+}
+
+export function getThread(threadId: string): ThreadRow | null {
+  const d = getDb();
+  const row = d.getFirstSync<Row>('SELECT id, title, createdAt, updatedAt FROM threads WHERE id = ?', [threadId]);
+  if (!row) return null;
+  return { id: row.id, title: (row as any).title, createdAt: (row as any).createdAt, updatedAt: (row as any).updatedAt } as ThreadRow;
+}
+
+export function getMessages(threadId: string, limit?: number): ChatMessageRow[] {
+  const d = getDb();
+  const sql = limit
+    ? 'SELECT id, threadId, role, content, createdAt FROM chat_messages WHERE threadId = ? ORDER BY createdAt ASC LIMIT ?'
+    : 'SELECT id, threadId, role, content, createdAt FROM chat_messages WHERE threadId = ? ORDER BY createdAt ASC';
+  const rows = limit ? d.getAllSync<Row>(sql, [threadId, limit]) : d.getAllSync<Row>(sql, [threadId]);
+  return rows.map((r) => ({ id: r.id, threadId, role: (r as any).role, content: (r as any).content, createdAt: (r as any).createdAt }));
+}
+
+// Optional: Upsert recent thread messages into docs/vectors for retrieval blending
+import { embedTextsFallback } from './embeddings';
+
+function float32ToUint8(arr: number[]): Uint8Array {
+  const buf = new ArrayBuffer(arr.length * 4);
+  const view = new DataView(buf);
+  for (let i = 0; i < arr.length; i++) view.setFloat32(i * 4, arr[i], true);
+  return new Uint8Array(buf);
+}
+
+export function upsertThreadVectors(threadId: string, messages: { id: string; content: string }[]) {
+  if (!messages || messages.length === 0) return;
+  const docs = messages.map((m) => ({ id: `thread_${threadId}_${m.id}`, text: m.content, source: 'thread' as const }));
+  upsertDocs(docs);
+  const vecs = embedTextsFallback(docs.map((d) => d.text));
+  const dim = vecs[0]?.length || 0;
+  const rows = vecs.map((v, i) => ({ id: docs[i].id, dim, data: float32ToUint8(v) }));
+  upsertVectors(rows);
+}

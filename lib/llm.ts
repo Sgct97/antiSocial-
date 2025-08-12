@@ -4,7 +4,17 @@ import Constants from 'expo-constants';
 // @ts-ignore app.json has no types
 import appJson from '../app.json';
 import { retrieveTopK } from './ideas';
-import { getDocsByIds, getCachedPrompts, setCachedPrompts, initDb } from './db';
+import {
+  getDocsByIds,
+  getCachedPrompts,
+  setCachedPrompts,
+  initDb,
+  ensureChatTables,
+  upsertThread,
+  appendMessage,
+  getMessages,
+  upsertThreadVectors,
+} from './db';
 import { logDebug } from './log';
 
 // Prefer EXPO_PUBLIC_* env first (for .env in Expo Go), then expo-constants.extra, then generic env, then HTTPS default
@@ -228,4 +238,110 @@ export async function generatePromptsForIdea(
   }
 
   return [];
+}
+
+export async function continueThread(
+  threadId: string,
+  userInput: string,
+  idea: { title: string; blurb: string },
+  onLog?: (msg: string) => void,
+): Promise<string> {
+  try { initDb(); ensureChatTables(); } catch {}
+  try {
+    const line = `[ChatLLM] continue thread=${threadId}`;
+    console.log(line);
+    logDebug(line);
+    onLog?.(line);
+  } catch {}
+
+  // Ensure thread exists and append user message
+  const thread = upsertThread({ id: threadId, title: idea.title });
+  const userMsg = appendMessage({ threadId, role: 'user', content: userInput });
+  try { onLog?.(`[ChatLLM] appended user message id=${userMsg.id}`); } catch {}
+
+  // Load recent messages and optionally embed them for retrieval
+  const recent = getMessages(threadId, 30);
+  try { onLog?.(`[ChatLLM] fetched messages count=${recent.length}`); } catch {}
+
+  // Build RAG context: combine global top-K + recent raw texts
+  let contextDocs = '';
+  try {
+    const { embedTextsFallback } = await import('./embeddings');
+    const qVec = embedTextsFallback([`${idea.title}. ${idea.blurb}. ${userInput}`])[0];
+    const top = retrieveTopK(qVec, 6);
+    const globals = getDocsByIds(top.map((t) => t.id)).map((d) => d.text);
+    const recentText = recent.slice(-10).map((m) => `[${m.role}] ${m.content}`);
+    contextDocs = [...globals, ...recentText].join('\n\n');
+    const line = `[ChatLLM] RAG context globals=${globals.length} recent=${recentText.length} totalLen=${contextDocs.length}`;
+    console.log(line);
+    logDebug(line);
+    onLog?.(line);
+  } catch (e) {
+    const line = `[ChatLLM] RAG context build failed: ${(e as Error)?.message ?? String(e)}`;
+    console.warn(line);
+    logDebug(line);
+    onLog?.(line);
+  }
+
+  const system = `You are a concise, warm product coach. Use the idea context, prior messages, and retrieved notes to propose next concrete steps. Always stay consistent with the thread’s history.`;
+  const user = `Idea: ${idea.title}\n\nBlurb: ${idea.blurb}\n\nNotes + recent chat:\n${contextDocs}\n\nUser now says: ${userInput}\n\nRespond with a brief, practical next step or two (3-6 sentences max).`;
+
+  function extractText(resp: unknown): string {
+    if (!resp || typeof resp !== 'object') return '';
+    const maybeChoices = (resp as { choices?: unknown }).choices;
+    if (!Array.isArray(maybeChoices) || maybeChoices.length === 0) return '';
+    const first = maybeChoices[0];
+    if (first && typeof first === 'object') {
+      const maybeMessage = (first as { message?: unknown }).message;
+      const maybeText = (first as { text?: unknown }).text;
+      const fromMessage = maybeMessage && typeof maybeMessage === 'object' ? (maybeMessage as { content?: unknown }).content : undefined;
+      if (typeof fromMessage === 'string') return fromMessage;
+      if (typeof maybeText === 'string') return maybeText;
+    }
+    return '';
+  }
+
+  try {
+    const reqBody = {
+      model: MODEL,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0.6,
+      max_tokens: 400,
+    } as const;
+    let attempt = 1;
+    let text = '';
+    while (attempt <= 2) {
+      const json = await withTimeout(postJSON(LLM_URL, reqBody as unknown as Record<string, unknown>), 20000);
+      text = extractText(json);
+      const line = `[ChatLLM] attempt=${attempt} resp length=${text.length}`;
+      console.log(line);
+      logDebug(line);
+      onLog?.(line);
+      if (text && text.trim().length > 10) break;
+      attempt += 1;
+    }
+
+    const assistantText = text?.trim() || 'I have a suggestion, but the model returned no content.';
+    const saved = appendMessage({ threadId, role: 'assistant', content: assistantText });
+    try { onLog?.(`[ChatLLM] saved assistant message id=${saved.id}`); } catch {}
+
+    // Optionally embed last few messages for retrieval
+    try {
+      upsertThreadVectors(threadId, recent.slice(-8).map((m) => ({ id: m.id, content: m.content })).concat([{ id: saved.id, content: assistantText }]));
+      onLog?.('[ChatLLM] updated thread vectors');
+    } catch {}
+
+    return assistantText;
+  } catch (e) {
+    const line = `[ChatLLM] request failed: ${(e as Error)?.message ?? String(e)}`;
+    console.warn(line);
+    logDebug(line);
+    onLog?.(line);
+    const fallback = 'I hit a temporary issue generating a reply. Try again in a moment.';
+    appendMessage({ threadId, role: 'assistant', content: fallback });
+    return fallback;
+  }
 }

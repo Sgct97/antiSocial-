@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { router } from 'expo-router';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withDelay } from 'react-native-reanimated';
 import CardArt from './CardArt';
 import { generatePromptsForIdea } from '../lib/llm';
@@ -115,7 +116,9 @@ export default function IdeaCard({ id, title, blurb, hook = 'Let’s make a move
         </View>
       </View>
       <Animated.View style={[styles.chip, chipStyle]}>
-        <Text style={styles.chipText}>{hook}</Text>
+        <Pressable onPress={() => router.push(`/chat/${id}`)}>
+          <Text style={styles.chipText}>{hook}</Text>
+        </Pressable>
       </Animated.View>
       <Animated.View style={[styles.ctaRow, ctaStyle]}>
         <Text style={styles.ctaText}>Tap to open chat</Text>

@@ -9,7 +9,13 @@ export function logDebug(message: string) {
   const line = `${ts} ${message}`;
   buffer.push(line);
   if (buffer.length > MAX_LINES) buffer.shift();
-  for (const l of listeners) l(line);
+  // Notify listeners asynchronously to avoid triggering setState during render
+  const toNotify = Array.from(listeners);
+  setTimeout(() => {
+    for (const l of toNotify) {
+      try { l(line); } catch {}
+    }
+  }, 0);
   try { console.log(line); } catch {}
 }
 
