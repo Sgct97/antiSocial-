@@ -39,6 +39,20 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_news_posts_subreddit_time ON news_posts(subreddit, fetchedAt);
   `);
+  // Schema upgrades for news_posts
+  try {
+    const cols = d.getAllSync<{ name: string }>("PRAGMA table_info(news_posts)");
+    const names = new Set(cols.map((c: any) => String(c.name)));
+    if (!names.has('imageUrl')) {
+      d.execSync('ALTER TABLE news_posts ADD COLUMN imageUrl TEXT');
+    }
+    if (!names.has('selfText')) {
+      d.execSync('ALTER TABLE news_posts ADD COLUMN selfText TEXT');
+    }
+    if (!names.has('externalUrl')) {
+      d.execSync('ALTER TABLE news_posts ADD COLUMN externalUrl TEXT');
+    }
+  } catch {}
 }
 
 export function upsertDocs(rows: { id: string; text: string; source: string }[]) {
@@ -131,15 +145,18 @@ export type NewsPostRow = {
   score: number;
   createdAt: number; // Unix ms
   fetchedAt: number; // Unix ms (when cached)
+  imageUrl?: string | null;
+  selfText?: string | null;
+  externalUrl?: string | null;
 };
 
 export function upsertNewsPosts(rows: NewsPostRow[]) {
   if (!rows || rows.length === 0) return;
   const d = getDb();
-  const stmt = d.prepareSync('INSERT OR REPLACE INTO news_posts (id, subreddit, title, url, score, createdAt, fetchedAt) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const stmt = d.prepareSync('INSERT OR REPLACE INTO news_posts (id, subreddit, title, url, score, createdAt, fetchedAt, imageUrl, selfText, externalUrl) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   d.withTransactionSync(() => {
     for (const r of rows) {
-      stmt.executeSync([r.id, r.subreddit, r.title, r.url, r.score, r.createdAt, r.fetchedAt]);
+      stmt.executeSync([r.id, r.subreddit, r.title, r.url, r.score, r.createdAt, r.fetchedAt, r.imageUrl ?? null, r.selfText ?? null, r.externalUrl ?? null]);
     }
     stmt.finalizeSync();
   });
@@ -149,7 +166,7 @@ export function getRecentNewsPosts(subreddits: string[], minFetchedAt: number): 
   if (!subreddits || subreddits.length === 0) return [];
   const d = getDb();
   const placeholders = subreddits.map(() => '?').join(',');
-  const sql = `SELECT id, subreddit, title, url, score, createdAt, fetchedAt FROM news_posts WHERE subreddit IN (${placeholders}) AND fetchedAt >= ? ORDER BY score DESC`;
+  const sql = `SELECT id, subreddit, title, url, score, createdAt, fetchedAt, imageUrl, selfText, externalUrl FROM news_posts WHERE subreddit IN (${placeholders}) AND fetchedAt >= ? ORDER BY score DESC`;
   const rows = d.getAllSync<Row>(sql, [...subreddits, minFetchedAt]);
   return rows.map((r) => ({
     id: r.id,
@@ -159,6 +176,9 @@ export function getRecentNewsPosts(subreddits: string[], minFetchedAt: number): 
     score: Number((r as any).score),
     createdAt: Number((r as any).createdAt),
     fetchedAt: Number((r as any).fetchedAt ?? 0),
+    imageUrl: (r as any).imageUrl ?? null,
+    selfText: (r as any).selfText ?? null,
+    externalUrl: (r as any).externalUrl ?? null,
   })) as NewsPostRow[];
 }
 
@@ -167,6 +187,18 @@ export function clearOldNewsPosts(olderThanMs: number) {
   const cutoff = Date.now() - olderThanMs;
   const stmt = d.prepareSync('DELETE FROM news_posts WHERE fetchedAt < ?');
   stmt.executeSync([cutoff]);
+  stmt.finalizeSync();
+}
+
+export function clearNewsCache() {
+  const d = getDb();
+  d.execSync('DELETE FROM news_posts');
+}
+
+export function setNewsPostSelfText(id: string, selfText: string) {
+  const d = getDb();
+  const stmt = d.prepareSync('UPDATE news_posts SET selfText = ? WHERE id = ?');
+  stmt.executeSync([selfText, id]);
   stmt.finalizeSync();
 }
 
