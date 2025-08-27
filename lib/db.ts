@@ -28,6 +28,16 @@ export function initDb() {
       data_text TEXT NOT NULL,
       updatedAt INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS news_posts (
+      id TEXT PRIMARY KEY,
+      subreddit TEXT NOT NULL,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      score INTEGER NOT NULL,
+      createdAt INTEGER NOT NULL,
+      fetchedAt INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_news_posts_subreddit_time ON news_posts(subreddit, fetchedAt);
   `);
 }
 
@@ -107,6 +117,57 @@ export function clearPromptsForIds(ids: string[]) {
     for (const id of ids) stmt.executeSync([id]);
     stmt.finalizeSync();
   });
+}
+
+// ----------------------
+// News posts cache
+// ----------------------
+
+export type NewsPostRow = {
+  id: string;
+  subreddit: string;
+  title: string;
+  url: string;
+  score: number;
+  createdAt: number; // Unix ms
+  fetchedAt: number; // Unix ms (when cached)
+};
+
+export function upsertNewsPosts(rows: NewsPostRow[]) {
+  if (!rows || rows.length === 0) return;
+  const d = getDb();
+  const stmt = d.prepareSync('INSERT OR REPLACE INTO news_posts (id, subreddit, title, url, score, createdAt, fetchedAt) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  d.withTransactionSync(() => {
+    for (const r of rows) {
+      stmt.executeSync([r.id, r.subreddit, r.title, r.url, r.score, r.createdAt, r.fetchedAt]);
+    }
+    stmt.finalizeSync();
+  });
+}
+
+export function getRecentNewsPosts(subreddits: string[], minFetchedAt: number): NewsPostRow[] {
+  if (!subreddits || subreddits.length === 0) return [];
+  const d = getDb();
+  const placeholders = subreddits.map(() => '?').join(',');
+  const sql = `SELECT id, subreddit, title, url, score, createdAt, fetchedAt FROM news_posts WHERE subreddit IN (${placeholders}) AND fetchedAt >= ? ORDER BY score DESC`;
+  const rows = d.getAllSync<Row>(sql, [...subreddits, minFetchedAt]);
+  return rows.map((r) => ({
+    id: r.id,
+    subreddit: (r as any).subreddit,
+    title: (r as any).title,
+    url: (r as any).url,
+    score: Number((r as any).score),
+    createdAt: Number((r as any).createdAt),
+    fetchedAt: Number((r as any).fetchedAt ?? 0),
+  })) as NewsPostRow[];
+}
+
+export function clearOldNewsPosts(olderThanMs: number) {
+  const d = getDb();
+  const cutoff = Date.now() - olderThanMs;
+  const stmt = d.prepareSync('DELETE FROM news_posts WHERE fetchedAt < ?');
+  stmt.executeSync([cutoff]);
+  stmt.finalizeSync();
 }
 
 // ----------------------
